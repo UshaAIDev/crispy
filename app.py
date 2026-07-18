@@ -12,7 +12,6 @@ Authentication (optional – raises API rate limit from 60 to 5,000 req/h):
 """
 
 import os
-import math
 from datetime import date, timedelta, datetime
 
 import pandas as pd
@@ -20,6 +19,14 @@ import plotly.express as px
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+
+from github_api import (
+    fetch_commits,
+    fetch_contributors,
+    fetch_rate_limit,
+    fetch_workflow_runs,
+)
+from scorer import build_commit_counts, compute_scores, find_recent_authors
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -29,110 +36,6 @@ st.set_page_config(
     page_icon="📊",
     layout="wide",
 )
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-GITHUB_API = "https://api.github.com"
-
-
-def _headers(token: str | None) -> dict:
-    h = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-    if token:
-        h["Authorization"] = "Bearer " + token
-    return h
-
-
-def _get(url: str, params: dict, token: str | None) -> requests.Response:
-    return requests.get(url, headers=_headers(token), params=params, timeout=20)
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_commits(owner: str, repo: str, since_iso: str, until_iso: str, token: str | None) -> list[dict]:
-    """Return a flat list of commit records for the date range."""
-    commits = []
-    page = 1
-    while True:
-        resp = _get(
-            f"{GITHUB_API}/repos/{owner}/{repo}/commits",
-            {"since": since_iso, "until": until_iso, "per_page": 100, "page": page},
-            token,
-        )
-        if resp.status_code == 409:
-            # empty repo
-            break
-        resp.raise_for_status()
-        batch = resp.json()
-        if not batch:
-            break
-        commits.extend(batch)
-        if len(batch) < 100:
-            break
-        page += 1
-    return commits
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_workflow_runs(owner: str, repo: str, since_iso: str, until_iso: str, token: str | None) -> list[dict]:
-    """Return workflow runs in the date range (created >= since, <= until)."""
-    runs = []
-    page = 1
-    # GitHub query syntax for created range
-    created_query = f"{since_iso[:10]}..{until_iso[:10]}"
-    while True:
-        resp = _get(
-            f"{GITHUB_API}/repos/{owner}/{repo}/actions/runs",
-            {"created": created_query, "per_page": 100, "page": page, "status": "completed"},
-            token,
-        )
-        if resp.status_code in (403, 404):
-            break
-        resp.raise_for_status()
-        data = resp.json()
-        batch = data.get("workflow_runs", [])
-        if not batch:
-            break
-        runs.extend(batch)
-        total = data.get("total_count", 0)
-        if len(runs) >= total or len(batch) < 100:
-            break
-        page += 1
-    return runs
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_contributors(owner: str, repo: str, token: str | None) -> list[dict]:
-    """Return the top contributors list (all-time) from GitHub."""
-    contributors = []
-    page = 1
-    while True:
-        resp = _get(
-            f"{GITHUB_API}/repos/{owner}/{repo}/contributors",
-            {"per_page": 100, "page": page, "anon": "false"},
-            token,
-        )
-        if resp.status_code in (403, 404, 204):
-            break
-        resp.raise_for_status()
-        batch = resp.json()
-        if not batch:
-            break
-        contributors.extend(batch)
-        if len(batch) < 100:
-            break
-        page += 1
-    return contributors
-
-
-def rate_limit_info(token: str | None) -> dict:
-    try:
-        resp = requests.get(f"{GITHUB_API}/rate_limit", headers=_headers(token), timeout=10)
-        if resp.ok:
-            return resp.json().get("rate", {})
-    except Exception:
-        pass
-    return {}
-
 
 # ---------------------------------------------------------------------------
 # Sidebar – controls
@@ -176,10 +79,10 @@ else:
 since_iso = datetime.combine(date_from, datetime.min.time()).isoformat() + "Z"
 until_iso = datetime.combine(date_to, datetime.max.time()).isoformat() + "Z"
 
-fetch_btn = st.sidebar.button("🔄 Fetch / Refresh", type="primary", use_container_width=True)
+st.sidebar.button("🔄 Fetch / Refresh", type="primary", use_container_width=True)
 
-# Show rate limit
-rl = rate_limit_info(token)
+# Rate-limit display
+rl = fetch_rate_limit(token)
 if rl:
     st.sidebar.markdown("---")
     st.sidebar.caption(
@@ -225,7 +128,7 @@ with st.spinner(f"Fetching data from GitHub for {owner}/{repo} …"):
         st.stop()
 
 if not commits_raw and not runs_raw:
-    st.info("No data found for the selected date range.  Try a wider range or check the repository name.")
+    st.info("No data found for the selected date range. Try a wider range or check the repository name.")
     st.stop()
 
 # ---------------------------------------------------------------------------
@@ -236,26 +139,11 @@ st.header("1 · Commit Percentage by Contributor")
 if not commits_raw:
     st.info("No commits found in this date range.")
 else:
-    commit_authors: dict[str, int] = {}
-    for c in commits_raw:
-        author = (
-            (c.get("author") or {}).get("login")
-            or (c.get("commit", {}).get("author") or {}).get("name")
-            or "unknown"
-        )
-        commit_authors[author] = commit_authors.get(author, 0) + 1
-
-    df_commits = (
-        pd.DataFrame(list(commit_authors.items()), columns=["contributor", "commits"])
-        .sort_values("commits", ascending=False)
-        .reset_index(drop=True)
-    )
-    df_commits["percentage"] = (df_commits["commits"] / df_commits["commits"].sum() * 100).round(2)
+    df_commits = build_commit_counts(commits_raw)
 
     col1, col2 = st.columns([1, 1])
 
     with col1:
-        # Pie – top 10, rest grouped
         top_n = 10
         if len(df_commits) > top_n:
             top = df_commits.head(top_n).copy()
@@ -296,16 +184,13 @@ st.header("2 · Builds per Day")
 if not runs_raw:
     st.info("No completed workflow runs found for this date range (or Actions not enabled for this repo).")
 else:
-    build_rows = []
-    for r in runs_raw:
-        created = r.get("created_at", "")[:10]
-        conclusion = r.get("conclusion") or "other"
-        build_rows.append({"date": created, "conclusion": conclusion})
-
+    build_rows = [
+        {"date": r.get("created_at", "")[:10], "conclusion": r.get("conclusion") or "other"}
+        for r in runs_raw
+    ]
     df_runs = pd.DataFrame(build_rows)
     df_runs["date"] = pd.to_datetime(df_runs["date"])
 
-    # Pivot: one row per day, columns per conclusion
     df_pivot = (
         df_runs.groupby(["date", "conclusion"])
         .size()
@@ -316,17 +201,13 @@ else:
         .reset_index()
     )
 
-    # Ensure success/failure columns exist
     for col in ("success", "failure"):
         if col not in df_pivot.columns:
             df_pivot[col] = 0
 
-    # All-dates spine so gaps show as zero
     all_dates = pd.date_range(date_from, date_to, freq="D")
-    df_spine = pd.DataFrame({"date": all_dates})
-    df_pivot = df_spine.merge(df_pivot, on="date", how="left").fillna(0)
+    df_pivot = pd.DataFrame({"date": all_dates}).merge(df_pivot, on="date", how="left").fillna(0)
 
-    # Build stacked bar
     other_cols = [c for c in df_pivot.columns if c not in ("date", "success", "failure")]
     color_map = {"success": "#2ecc71", "failure": "#e74c3c"}
     for c in other_cols:
@@ -353,7 +234,6 @@ else:
     )
     st.plotly_chart(fig_bar, use_container_width=True)
 
-    # Summary metrics
     total_runs = len(runs_raw)
     successes = sum(1 for r in runs_raw if r.get("conclusion") == "success")
     failures = sum(1 for r in runs_raw if r.get("conclusion") == "failure")
@@ -378,87 +258,30 @@ with st.expander("ℹ️ How the score is calculated", expanded=False):
         | Signal | Weight | Description |
         |--------|--------|-------------|
         | Commit volume (in range) | 50% | Number of commits in the selected date range |
-        | All-time contribution share | 30% | Contributor's share of total all-time commits (from `/contributors` API) |
+        | All-time contribution share | 30% | Contributor's share of total all-time commits |
         | Recency bonus | 20% | Whether the contributor committed in the last 7 days |
 
-        **Formula (per contributor)**
+        **Formula**
 
         ```
         score = 0.5 × (commits_in_range / max_commits_in_range)
               + 0.3 × (all_time_commits / total_all_time_commits)
-              + 0.2 × recency_flag          # 1 if committed in last 7 days, else 0
+              + 0.2 × recency_flag
         ```
 
-        Scores are normalized to **0–100**.
+        Scores are normalised to **0–100**.
         """
     )
 
 if not commits_raw:
     st.info("No commits available to rank contributors.")
 else:
-    # --- recent-7-days flag ---
-    seven_days_ago = (today - timedelta(days=7)).isoformat()  # YYYY-MM-DD string
-    recent_authors: set[str] = set()
-    for c in commits_raw:
-        committed_at = (c.get("commit", {}).get("author") or {}).get("date", "")
-        # committed_at is ISO 8601 (e.g. "2024-05-01T12:00:00Z"); slice to YYYY-MM-DD for comparison
-        if committed_at[:10] >= seven_days_ago[:10]:
-            author = (
-                (c.get("author") or {}).get("login")
-                or (c.get("commit", {}).get("author") or {}).get("name")
-                or "unknown"
-            )
-            recent_authors.add(author)
-
-    # --- All-time commits map ---
-    all_time_map: dict[str, int] = {c["login"]: c["contributions"] for c in contributors_raw if "login" in c}
-    total_all_time = sum(all_time_map.values()) or 1
-
-    # --- Build score dataframe ---
     if "df_commits" not in dir():
-        # Rebuild if section 1 was skipped
-        commit_authors_local: dict[str, int] = {}
-        for c in commits_raw:
-            author = (
-                (c.get("author") or {}).get("login")
-                or (c.get("commit", {}).get("author") or {}).get("name")
-                or "unknown"
-            )
-            commit_authors_local[author] = commit_authors_local.get(author, 0) + 1
-        df_commits = pd.DataFrame(
-            list(commit_authors_local.items()), columns=["contributor", "commits"]
-        ).sort_values("commits", ascending=False).reset_index(drop=True)
+        df_commits = build_commit_counts(commits_raw)
 
-    max_commits = df_commits["commits"].max() or 1
+    recent_authors = find_recent_authors(commits_raw, today)
+    df_score = compute_scores(df_commits, contributors_raw, recent_authors)
 
-    score_rows = []
-    for _, row in df_commits.iterrows():
-        login = row["contributor"]
-        vol_score = row["commits"] / max_commits
-        at_score = all_time_map.get(login, 0) / total_all_time
-        recency = 1 if login in recent_authors else 0
-        raw = 0.5 * vol_score + 0.3 * at_score + 0.2 * recency
-        score_rows.append(
-            {
-                "Rank": 0,
-                "Contributor": login,
-                "Commits (range)": int(row["commits"]),
-                "All-time commits": all_time_map.get(login, "N/A"),
-                "Recent (7d)": "✅" if recency else "—",
-                "Score (0–100)": round(raw * 100, 1),
-            }
-        )
-
-    df_score = (
-        pd.DataFrame(score_rows)
-        .sort_values("Score (0–100)", ascending=False)
-        .reset_index(drop=True)
-    )
-    df_score["Rank"] = range(1, len(df_score) + 1)
-    cols_order = ["Rank", "Contributor", "Commits (range)", "All-time commits", "Recent (7d)", "Score (0–100)"]
-    df_score = df_score[cols_order]
-
-    # Top-3 callout
     if len(df_score) >= 1:
         medals = ["🥇", "🥈", "🥉"]
         callout_cols = st.columns(min(3, len(df_score)))
@@ -472,7 +295,6 @@ else:
 
     st.dataframe(df_score, hide_index=True, use_container_width=True)
 
-    # Horizontal bar chart of top-20
     top20 = df_score.head(20).sort_values("Score (0–100)")
     fig_rank = px.bar(
         top20,
