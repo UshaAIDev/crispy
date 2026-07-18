@@ -239,11 +239,23 @@ else:
     failures = sum(1 for r in runs_raw if r.get("conclusion") == "failure")
     success_rate = successes / total_runs * 100 if total_runs else 0
 
-    m1, m2, m3, m4 = st.columns(4)
+    # Average run duration (seconds → minutes) where both timestamps are present
+    durations = []
+    for r in runs_raw:
+        try:
+            start = datetime.fromisoformat(r["created_at"].replace("Z", "+00:00"))
+            end = datetime.fromisoformat(r["updated_at"].replace("Z", "+00:00"))
+            durations.append((end - start).total_seconds() / 60)
+        except (KeyError, ValueError, TypeError):
+            pass
+    avg_duration = sum(durations) / len(durations) if durations else None
+
+    m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Total runs", total_runs)
     m2.metric("✅ Successful", successes)
     m3.metric("❌ Failed", failures)
     m4.metric("Success rate", f"{success_rate:.1f}%")
+    m5.metric("Avg duration", f"{avg_duration:.1f} min" if avg_duration is not None else "N/A")
 
 # ---------------------------------------------------------------------------
 # Section 3 – Best Contributor Ranking
