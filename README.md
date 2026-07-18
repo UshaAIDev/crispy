@@ -1,12 +1,25 @@
 # 📊 GitHub Analytics Dashboard
 
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+![Streamlit](https://img.shields.io/badge/streamlit-1.35%2B-red)
+![License](https://img.shields.io/badge/license-MIT-green)
+
 A lightweight Streamlit dashboard that visualises GitHub repository activity:
 
 | Metric | Description |
 |---|---|
 | **Commit % by contributor** | Pie chart + table showing each contributor's share of commits in the chosen date range |
-| **Builds per day** | Stacked bar chart of GitHub Actions workflow-run conclusions (success / failure / other) per day |
+| **Builds per day** | Stacked bar chart of GitHub Actions workflow-run conclusions (success / failure / other) per day, plus avg. run duration |
 | **Best contributor ranking** | Scored leaderboard combining commit volume, all-time share, and recency |
+
+## Table of contents
+
+- [Quick start](#quick-start)
+- [Configuration](#configuration)
+- [How the score works](#how-the-best-contributor-score-works)
+- [Running tests](#running-tests)
+- [Limitations](#limitations)
+- [Contributing](CONTRIBUTING.md)
 
 ## Quick start
 
@@ -62,6 +75,15 @@ score = 0.5 × (commits_in_range / max_commits_in_range)
 
 Scores are normalised to **0–100**.  
 The formula rewards consistent volume, long-term commitment, and recent activity equally.
+
+---
+
+## Running tests
+
+```bash
+pip install pytest
+pytest tests/ -v
+```
 
 ---
 
