@@ -7,7 +7,7 @@ and a best-contributor ranking for any public GitHub repository.
 Usage:
     streamlit run app.py
 
-Authentication (optional – raises API rate limit from 60 to 5 000 req/h):
+Authentication (optional – raises API rate limit from 60 to 5,000 req/h):
     export GITHUB_TOKEN=ghp_...
 """
 
@@ -144,7 +144,7 @@ token_input = st.sidebar.text_input(
     "GitHub Token (optional)",
     value=token_env,
     type="password",
-    help="Personal access token to increase API rate limit from 60 → 5 000 req/h.",
+    help="Personal access token to increase API rate limit from 60 → 5,000 req/h.",
 )
 token: str | None = token_input.strip() or None
 
@@ -397,11 +397,12 @@ if not commits_raw:
     st.info("No commits available to rank contributors.")
 else:
     # --- recent-7-days flag ---
-    seven_days_ago = (today - timedelta(days=7)).isoformat()
+    seven_days_ago = (today - timedelta(days=7)).isoformat()  # YYYY-MM-DD string
     recent_authors: set[str] = set()
     for c in commits_raw:
         committed_at = (c.get("commit", {}).get("author") or {}).get("date", "")
-        if committed_at[:10] >= seven_days_ago:
+        # committed_at is ISO 8601 (e.g. "2024-05-01T12:00:00Z"); slice to YYYY-MM-DD for comparison
+        if committed_at[:10] >= seven_days_ago[:10]:
             author = (
                 (c.get("author") or {}).get("login")
                 or (c.get("commit", {}).get("author") or {}).get("name")
@@ -493,6 +494,6 @@ else:
 st.markdown("---")
 st.caption(
     "Data sourced from the [GitHub REST API](https://docs.github.com/en/rest). "
-    "Unauthenticated requests are limited to 60/h — add a token for 5 000/h. "
+    "Unauthenticated requests are limited to 60/h — add a token for 5,000/h. "
     "Large repos may take a few seconds to load; results are cached for 5 minutes."
 )

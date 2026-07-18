@@ -21,7 +21,7 @@ pip install -r requirements.txt
 ### 2 · (Optional) Set a GitHub token
 
 Without a token the GitHub API is limited to **60 requests/hour**.  
-With a token the limit rises to **5 000 requests/hour**.
+With a token the limit rises to **5,000 requests/hour**.
 
 ```bash
 export GITHUB_TOKEN=ghp_yourPersonalAccessToken
